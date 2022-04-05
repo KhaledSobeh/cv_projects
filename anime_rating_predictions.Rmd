@@ -1,0 +1,213 @@
+---
+title: "Econometrics - Project"
+author: "Khaled & Taqwa"
+date: "9.6.2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, echo=FALSE}
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(sandwich)
+library(sqldf)
+library(lmtest)
+library(stringr)
+```
+
+```{r}
+anime <- read.csv('anime.csv')
+anime <- drop_na(anime)
+```
+```{r}
+df <- anime
+```
+
+
+# Feature Engineering - 1
+
+## 1
+### in this variable, we are calculating the number of years that the anime has been shown/streamed.
+```{r}
+df$streaming_time <- df$finishYr-df$startYr
+```
+
+## 2
+### in this feature, we are counting the number of tags for each anime.
+```{r}
+tags_count <- c()
+for(i in 1:dim(df)[1]){
+  tags_count <- c(tags_count,length(as.list(strsplit(df$tags, ",")[[i]])))
+}
+df$tags_count <- tags_count
+```
+
+## 3
+### in this feature, we are counting the number of warnings for each anime.
+```{r}
+count_warning <- c()
+for(i in 1:length(df$contentWarn)){
+  x <- str_count(df$contentWarn[[i]],pattern = ",")
+  if(x>0){
+    x <- x+1
+  }
+  if(x==0){
+    y <- sum(str_count(df$contentWarn[[i]],pattern = letters))
+    if(y>0){
+      x <- 1
+    }
+  }
+  count_warning <- c(count_warning,x)
+}
+df$count_warning <- count_warning
+```
+```{r}
+ggplot(df,aes(factor(count_warning),rating)) + geom_boxplot()
+c1 <- sqldf('SELECT rating
+            FROM df
+            WHERE count_warning==1')[,1]
+c0 <- sqldf('SELECT rating
+            FROM df
+            WHERE count_warning==0')[,1]
+
+t.test(c1,c0)
+```
+
+
+## 2
+### in this feature, we are checking if the anime has a desciption or not.
+```{r}
+df$is_description <- as.factor(ifelse(nchar(anime$description)>0,1,0))
+```
+```{r}
+d1 <- sqldf('SELECT rating
+            FROM df
+            WHERE is_description==1')[,1]
+d0 <- sqldf('SELECT rating
+            FROM df
+            WHERE is_description==0')[,1]
+
+t.test(d1,d0)
+```
+
+
+
+
+```{r}
+write.csv(df, "data1.csv")
+```
+
+
+```{r}
+data1 <- read.csv('data1.csv')
+```
+
+```{r}
+eco_model <- select(data1,c(title,mediaType,duration,is_description,tags_count,count_warning,watched,votes, rating))
+```
+
+
+```{r}
+eco_model$mediaType <- ifelse(nchar(eco_model$mediaType)==0 |(eco_model$mediaType)=='Other',NA,eco_model$mediaType)
+eco_model <- drop_na(eco_model)
+eco_model$mediaType <- as.factor(eco_model$mediaType)
+```
+
+
+
+```{r}
+summary(select(eco_model,c(duration,tags_count,count_warning,watched,votes,rating)))
+```
+
+Plots 2
+```{r}
+ggplot(eco_model,aes(votes)) + geom_histogram() + ggtitle("histogram for votes number")
+```
+
+```{r}
+eco_model$is_description <- as.factor(ifelse(eco_model$is_description==1,'Yes','No'))
+```
+
+
+```{r}
+ggplot(eco_model,aes(is_description)) + geom_bar(aes(fill = is_description)) + ggtitle("bar plot - is the anime has a desciption?") + xlab("is_description") + geom_text(stat = 'count',aes(label =..count.., vjust = -0.12)) + scale_fill_manual( values = c("#999999",  "#E69F00"))
+```
+
+
+
+Plots 3
+```{r}
+library(ggpubr)
+ggplot(eco_model,aes(duration,rating)) + geom_point(alpha = 0.1)+ geom_smooth(method = 'lm') + ggtitle("scatter plot and a line of linear correlation") + stat_cor(aes(label = ..r.label..), label.x = 4)
+```
+
+
+
+```{r}
+#eco_model <- select(eco_model,-watched)
+```
+
+```{r}
+eco_model <- select(eco_model,-title)
+```
+
+
+```{r}
+lm1 <- lm(rating ~ .,data = eco_model)
+summary(lm1)
+```
+
+```{r}
+lm2 <- lm(rating ~ duration + is_description + tags_count + count_warning + votes,data = eco_model)
+summary(lm2)
+```
+
+```{r}
+
+sse1 <- sum((fitted(lm1) - eco_model$rating)^2)
+sse2 <- sum((fitted(lm2) - eco_model$rating)^2)
+
+ssr1 <- sum((fitted(lm1) - mean(eco_model$rating))^2)
+ssr2 <- sum((fitted(lm2) - mean(eco_model$rating))^2)
+
+sst1 <- sse1 + ssr1
+sst2 <- sse2 + ssr2
+
+Fcr <- ((ssr1-ssr2)/6)/(0.6524^2)
+Fst <- qf(0.95,6,6818)
+
+
+
+```
+
+
+
+
+```{r}
+bptest(lm1)
+```
+`
+
+
+
+```{r}
+#coeftest(lm1, vcov = vcovHC(lm1, "HC1"))   # HC1 gives us the White standard errors
+eco_model$resi <- lm1$residuals
+lm3 <- lm(resi^2 ~ duration + is_description + tags_count + count_warning + votes+ mediaType, data = eco_model)
+summary(lm3)
+
+
+```
+
+```{r}
+bptest(lm3)
+```
+
+
+
+
