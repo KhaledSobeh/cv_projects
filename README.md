@@ -1,4 +1,4 @@
-#### Here you can find my projects that been listed in my cv.
-#### Each branch represent a project.
-#### I wish that my work will interest you and that it to be usefull to you.
+#### university projects that I have done.
+#### Each branch represents a project.
+#### I hope that my work will interest you and that it will be useful to you.
 #### Thanks :)
