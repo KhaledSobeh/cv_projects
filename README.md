@@ -1,4 +1,3 @@
-#### university projects that I have done.
-#### Each branch represents a project.
-#### I hope that my work will interest you and that it will be useful to you.
-#### Thanks :)
+#### Simulate a wedding day using simmer package in R programming language.
+#### In this project we simulate a wedding day(Current_State file), and then we tried to ipmrove some performance measures to make guests happier(Alternative1).
+#### You can find all the work in the word document.
