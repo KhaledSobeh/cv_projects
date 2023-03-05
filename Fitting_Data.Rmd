@@ -1,0 +1,266 @@
+---
+title: "Arrival distribution and Simulatuin data normal assumption"
+author: "Group 39"
+date: "7/1/2023"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+we will need the following libraries: 
+```{r libraries, message=FALSE, include=FALSE}
+#echo=F: just show the results, not the code itself.
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(chron)
+library(fitdistrplus)
+library(magrittr)
+library(lubridate)
+#install.packages('hms')
+library(hms)
+```
+
+# 1. Fit the data to our needs
+
+## 1.1  Empirical Data
+Empirical data - observations. 
+Here we read the date from an excel file that provided to us.
+In the file there are the arrival time stamps of the first 50 family and couple guests
+```{r generate, include=TRUE,echo=TRUE}
+
+sf <- read_excel('return.xlsx')
+sf1 <- sf$couples
+sf2 <- sf$families
+```
+
+
+```{r}
+fixData <- function(dt){
+  h <- hour(dt)
+  if(h<10){
+    h <- paste('0',h,sep = "")
+  }
+  m <- minute(dt)
+  if(m<10){
+    m <- paste('0',m,sep = "")
+  }
+  s <- round(second(dt))
+  if(s<10){
+    s <- paste('0',s,sep = "")
+  }
+  return(paste(h,":",m,":",s,sep = ""))
+}
+couples <- as_hms(sf1)
+families <- as_hms(sf2)
+couples <- as_hms(sapply(couples,FUN = fixData))
+families <- as_hms(sapply(families,FUN = fixData))
+
+```
+
+## 1.2  Define function 
+We don't want the arrival time stamp but the gap between two arrivals.
+```{r Define, include=TRUE,echo=FALSE}
+couples[1:5]
+```
+
+```{r}
+couple_vec <- c(0)
+family_vec <- c(0)
+for(i in 1:(length(couples)-1)){
+  couple_vec <- c(couple_vec,(couples[i+1]-couples[i])[[1]])
+  family_vec <- c(family_vec,(families[i+1]-families[i])[[1]])
+}
+family_vec <- family_vec/60
+couple_vec <- couple_vec/60
+```
+
+
+# 2. Fitting
+
+## 2.1 Getting a sence of how the data distributes like 
+
+couples data:
+```{r Getting a sence, include=TRUE,echo=TRUE}
+
+sample <- couple_vec
+par(mfrow = c(1, 3)) # defines 2 plots on the same window
+plot(sample, ylab = "Sample values")
+hist(sample, xlab="minutes", ylab = "Frequency ")
+boxplot(sample)
+
+```
+
+First impression:  index/sample plot can tells us that the data is continuous, from the histograms, we can tell that the data is not normal(skwed), and  from boxcox We see that We have outliers from one size.
+
+
+Family data:
+```{r , include=TRUE,echo=TRUE}
+
+sample <- family_vec
+par(mfrow = c(1, 3)) # defines 2 plots on the same window
+plot(sample, ylab = "Sample values")
+hist(sample, xlab="minutes", ylab = "Frequency ")
+boxplot(sample)
+
+```
+
+Here it's more clear that the data is more likely got from an exponential distribution.
+
+## 2.2 Trying to fit couple 
+```{r fit couple, include=TRUE,echo=TRUE}
+
+sample <- couple_vec
+
+ExpFit <- fitdist(sample, "exp") 
+summary(ExpFit) 
+
+#GammaFit <- fitdist(sample, "gamma")
+#summary(GammaFit)
+
+```
+
+### 2.2.1 Goodness-of-fit statistics for couples
+Now let's look even further, we will plot the data into a histogram (theoretical density), CDF, QQ-plot and PP-plot.
+```{r}
+
+par(mfrow = c(2, 2))
+legendText <- c("exp", "gamma") # define legend text
+denscomp(list(ExpFit), legendtext = legendText) # histograms
+qqcomp(list(ExpFit), legendtext = legendText)  # qq plot
+cdfcomp(list(ExpFit), legendtext = legendText) # cdf plot
+ppcomp(list(ExpFit), legendtext = legendText) # pp plot
+
+ExpGOF <- gofstat(ExpFit) %>% print()
+ExpGOF$kstest %>% print()
+
+```
+
+the data more likely to be from a exponential distribution.
+some data points are not looking perfect, but overall, QQ-Plot and Emperical-Theoretical CDFs looks good. 
+We decided  to keep every data points that We got.
+and according to KS-test, we were right to consider the data as exponential distributional data.
+
+## 2.3 Trying to fit family data 
+```{r fit family, include=TRUE,echo=TRUE}
+sample <- family_vec
+
+ExpFit <- fitdist(sample, "exp") 
+summary(ExpFit) 
+
+#GammaFit <- fitdist(sample, "gamma")
+#summary(GammaFit)
+
+```
+
+### 2.3.2 Goodness-of-fit statistics for families
+```{r}
+
+par(mfrow = c(2, 2))
+legendText <- c("exp") # define legend text
+denscomp(list(ExpFit), legendtext = legendText) # histograms
+qqcomp(list(ExpFit), legendtext = legendText)  # qq plot
+cdfcomp(list(ExpFit), legendtext = legendText) # cdf plot
+ppcomp(list(ExpFit), legendtext = legendText) # pp plot
+
+ExpGOF <- gofstat(ExpFit) %>% print()
+ExpGOF$kstest %>% print()
+
+```
+
+Zoom-Out image: We think that it's indeed an exponential distibution.
+We can see in QQ-Plot that we have two data points in the right of the plots, that are a little far from the line. nevetheless, we will keep them, because they are not too much far from the line.
+and according to KS-test, we were right to consider the data as exponential distributional data.
+
+# CONCLUTION
+both distributions were not rejected in both family and couple data, we can assume the following:
+
+couple is distributed exponentially with lambda = 0.5587186
+
+family is also distributed exponentially with lambda = 0.811765
+
+
+\newpage
+
+
+# Checking normality assumption for current state KPI's
+
+## 1.1.1 Import the data
+```{r, include=TRUE,echo=TRUE}
+
+data0 <- read.csv("data0.csv",header = T)
+dessert0 <- data0$dessert
+served0 <- data0$served
+
+```
+
+1.1.2 Checking assumption using KS test
+```{r, warning=FALSE}
+NormFitV <- fitdist(dessert0, "norm") 
+NornGOF <- gofstat(NormFitV) %>% print()
+NornGOF$kstest %>% print()
+```
+
+and normality assumption is accepted
+
+### 1.2.1 Fitting served to a Normal distribution
+```{r, include=TRUE,echo=TRUE, warning=FALSE}
+NormFitR <- fitdist(served0, "norm")
+NornGOF <- gofstat(NormFitR) %>% print()
+NornGOF$kstest %>% print()
+
+```
+
+
+
+according to Kolmogorov-Smirnov normality test: we now know our  served0 is normally distributed.
+
+## CONCLUTION
+Both data frames hypothesis has not been rejected, therefor they are both distributed Normally. 
+
+
+\newpage
+
+
+# Analyzing the KPIs for the first alternative
+
+## 2.1.1 Import the data
+This is the data regarding the first alternative
+```{r, include=TRUE,echo=TRUE}
+data1 <- read.csv("data1.csv",header = T)
+dessert1 <- data1$dessert
+served1 <- data1$served
+```
+
+2.2.1
+```{r, include=TRUE,echo=TRUE, warning=F}
+NormFitV <- fitdist(dessert1, "norm") 
+NormGOF <- gofstat(NormFitV) %>% print()
+NormGOF$kstest %>% print()
+
+```
+
+The assumption not rejected, therefore normal assumption is accepted.
+
+### 2.3.1 Fitting served to a Normal distribution
+```{r, include=TRUE,echo=TRUE, warning=FALSE}
+NormFitR <- fitdist(served1, "norm")
+NornGOF <- gofstat(NormFitR) %>% print()
+NornGOF$kstest %>% print()
+```
+
+## CONCLUTION
+Both data frames hypothesis has not been rejected, therefor they are both distributed Normally. 
+
+
+```{r}
+final_data <- data.frame(served0 = served0,
+                         dessert0 = dessert0,
+                         served1,
+                         dessert1)
+write.csv(final_data, "final_data.csv")
+```
+
+
