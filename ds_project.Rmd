@@ -1,0 +1,475 @@
+---
+title: "Data jobs salaries"
+output: html_document
+date: "2023-01-17"
+---
+
+```{r, warning=F,message=FALSE}
+library(Amelia) #missmap
+library(tidyverse)
+library(caTools) #sample.split
+library(cowplot) #plot_grid
+library(caret)
+library(Metrics)
+```
+
+# Data Cleaning
+```{r}
+##reading data
+jobs <- read.csv('salaries.csv')
+
+##same jobs different names
+jobs$job_title <- ifelse(jobs$job_title=="ML Engineer","Machine Learning Engineer",jobs$job_title)
+
+##only 5 jobs
+jobs <- jobs %>% filter(job_title %in% c("Data Engineer","Data Scientist","Data Analyst",
+                                         "Machine Learning Engineer","Analytics Engineer"))
+
+####################
+change_factors <- function(col,from,to){ #this function change categories names
+  # enter the column
+  # enter the categories
+  # enter the new categories
+  new_col <- c()
+  for(i in 1:length(col)){
+    for(cat in 1:length(from)){
+      if(from[cat] == col[i]){
+        new_col <- append(new_col,to[cat])
+        break
+      }
+    }
+  }
+  return(new_col)
+}
+
+##change to factors
+jobs$work_year <- as.factor(change_factors(jobs$work_year,
+                                           c("2020","2021","2022","2023"),
+                                           c("0: 2020","1: 2021","2: 2022","3: 2023")))
+jobs$experience_level <- as.factor(change_factors(jobs$experience_level,
+                                                  c("EN","MI","SE","EX"),
+                                                  c("0: EN","1: MI","2: SE","3: EX")))
+jobs$employment_type <- as.factor(change_factors(jobs$employment_type,
+                                                 c("FT","PT","FL","CT"),
+                                                 c("0: FT","1: PT","2: FL","3: CT")))
+jobs$remote_ratio <- as.factor(change_factors(jobs$remote_ratio,
+                                              c("0","50","100"),
+                                              c("0: 0%","1: 50%","2: 100%")))
+jobs$company_size <- as.factor(change_factors(jobs$company_size,
+                                              c("M","S","L"),c("1: M","0: S","2: L"))) 
+jobs$company_in_usa <- as.factor(ifelse(jobs$company_location=="US","1: USA","0: ELSE"))
+
+jobs$job_title <- as.factor(change_factors(jobs$job_title,
+                                           c("Data Engineer","Data Scientist","Data Analyst",
+                                         "Machine Learning Engineer","Analytics Engineer"),
+                                         c("2: Data Engineer","1: Data Scientist","0: Data Analyst",
+                                         "3: Machine Learning Engineer","4: Analytics Engineer")))
+
+##add column
+jobs$same_location <- as.factor(ifelse(
+  jobs$company_location == jobs$employee_residence,"0: Yes","1: No"))
+
+##add continent
+dd <- giscoR::gisco_countrycode
+jobs$continent <-  (sqldf::sqldf(
+            'select j.company_location, dd.continent
+             from jobs as j left join dd
+             on j.company_location = dd.iso2c')[,2])
+jobs$continent <- as.factor(change_factors(jobs$continent, 
+                                           c("Europe","Americas","Asia","Oceania","Africa"),
+                                           c("0: Europe","1: Americas","2: Asia","3: Oceania",
+                                             "4: Africa")))
+ss <- c()
+for(i in 1:nrow(jobs)){
+  if(jobs$continent[i]=="1: Americas"){
+    if(jobs$company_location[i] %in% c("US","CA")){
+      ss <- c(ss,T)
+    }
+    else{
+      ss <- c(ss,F)
+    }
+  }
+  else{
+    ss <- c(ss,T)
+  }
+}
+jobs <- jobs[ss,]
+
+jobs$salary_in_usd_k <- jobs$salary_in_usd/12
+jobs <- select(jobs,-c(salary,salary_in_usd,
+                       salary_currency,employee_residence,
+                       company_location))
+
+##target: change name 
+jobs <- rename(jobs, salary = salary_in_usd_k)
+
+```
+
+
+```{r}
+str(jobs)
+```
+
+supervisd, continuous target with categorical features.
+
+## check missing values
+```{r}
+missmap(jobs)
+```
+
+no missing data. We will see if we do have missing data as empty string, zeroes etc.
+
+
+## train test split
+before we go further, we will split the data. 
+```{r}
+set.seed(99)
+split <- sample.split(jobs$salary,SplitRatio = 0.7)
+jobs_train <- subset(jobs,split == T)
+jobs_test <- subset(jobs,split == F)
+```
+
+
+
+# Data Analysis/Visualization
+
+## Exploring the data - Univariate
+
+### the target
+```{r, message=F,warning=F}
+plot_grid(
+  ggplot(jobs_train,aes(salary)) + 
+    geom_histogram(color = 'white', fill = '#E69E80', linetype = 'dashed') +
+    labs(title =  'salary in $',x = "salary",
+       subtitle = 'the blue dot is the average of salary'),
+  
+  ggplot(jobs_train, aes(y = salary, x = 1)) + gghalves::geom_half_violin() +
+  #gghalves::geom_half_dotplot(binwidth = 1/8) +
+  gghalves::geom_half_boxplot(alpha=0.2, width = 0.3, outlier.alpha = 1, outlier.color = 'red') +
+    stat_summary(fun.y=mean, geom="point", shape=20, size=5, color="lightblue") +
+    coord_flip() + labs(x = "", y = ""),
+  
+  ncol = 1
+)
+```
+
+it seems normal with a high variance. also we have not a little of outliers, we were expecting to see this.
+```{r}
+summary(jobs_train$salary)
+```
+```{r}
+boxplot(jobs_train$salary)
+```
+
+
+```{r}
+t <- as.vector(summary(jobs_train$salary))
+iqr.range <- t[5]-t[2]
+upper_outliers <- t[5]+iqr.range*1.5
+ds <- jobs_train[jobs_train$salary<upper_outliers,]
+ds$salary <- ds$salary
+plot_grid(
+  ggplot(ds,aes(salary)) + 
+    geom_histogram(color = 'white', fill = '#E69E80', linetype = 'dashed') +
+    labs(title =  'Salary in thousands',
+       subtitle = 'the blue dot is the average of salary, upper outliers removed'),
+  
+  ggplot(ds,aes(y = salary,x = 1)) + gghalves::geom_half_violin() +
+  gghalves::geom_half_boxplot(alpha=0.2, width = 0.3, outlier.alpha = 1, outlier.color = 'red') +
+    stat_summary(fun.y=mean, geom="point", shape=20, size=5, color="lightblue") +
+    coord_flip() + labs(x = "", y = ""),
+  
+  ncol = 1
+)
+```
+
+since we want to use linear regression, it's important to pay attention the normal target. now the distribution looks better, but still has right skewed
+
+```{r}
+# t <- as.vector(summary(jobs_train$salary))
+# iqr.range <- t[5]-t[2]
+# upper_outliers <- t[5]+iqr.range*1.5
+# ds <- jobs_train[jobs_train$salary<upper_outliers,]
+ds <- jobs_train
+ds$salary <- sqrt(ds$salary)
+plot_grid(
+  ggplot(ds,aes(salary)) + 
+    geom_histogram(color = 'white', fill = '#E69E80', linetype = 'dashed') +
+    labs(title =  'sqrt Salary in thousands',
+       subtitle = 'the blue dot is the average of sqrt salary'),
+  
+  ggplot(ds,aes(y = salary,x = 1)) + gghalves::geom_half_violin() +
+  gghalves::geom_half_boxplot(alpha=0.2, width = 0.3, outlier.alpha = 1, outlier.color = 'red') +
+    stat_summary(fun.y=mean, geom="point", shape=20, size=5, color="lightblue") +
+    coord_flip() + labs(x = "", y = ""),
+  
+  ncol = 1
+)
+```
+
+```{r}
+t <- as.vector(summary(jobs_train$salary))
+iqr.range <- t[5]-t[2]
+upper_outliers <- t[5]+iqr.range*1.5
+ds <- jobs_train[jobs_train$salary<upper_outliers,]
+ds$salary <- sqrt(ds$salary)
+plot_grid(
+  ggplot(ds,aes(salary)) + 
+    geom_histogram(color = 'white', fill = '#E69E80', linetype = 'dashed') +
+    labs(title =  'sqrt Salary in thousands',
+       subtitle = 'the blue dot is the average of sqrt salary'),
+  
+  ggplot(ds,aes(y = salary,x = 1)) + gghalves::geom_half_violin() +
+  gghalves::geom_half_boxplot(alpha=0.2, width = 0.3, outlier.alpha = 1, outlier.color = 'red') +
+    stat_summary(fun.y=mean, geom="point", shape=20, size=5, color="lightblue") +
+    coord_flip() + labs(x = "", y = ""),
+  
+  ncol = 1
+)
+```
+
+```{r}
+ds <- jobs_train
+ds$salary <- sqrt(ds$salary)
+t <- as.vector(summary(ds$salary))
+iqr.range <- t[5]-t[2]
+upper_outliers <- t[5]+iqr.range*1.5
+lower_outliers <- t[2]-iqr.range*1.5
+ds <- ds[ds$salary<upper_outliers,]
+ds <- ds[ds$salary>lower_outliers,]
+plot_grid(
+  ggplot(ds,aes(salary)) + 
+    geom_histogram(color = 'white', fill = '#E69E80', linetype = 'dashed') +
+    labs(title =  'sqrt Salary in thousands',
+       subtitle = 'the blue dot is the average of sqrt salary, outliers removed after transformation'),
+  
+  ggplot(ds,aes(y = salary,x = 1)) + gghalves::geom_half_violin() +
+  gghalves::geom_half_boxplot(alpha=0.2, width = 0.3, outlier.alpha = 1, outlier.color = 'red') +
+    stat_summary(fun.y=mean, geom="point", shape=20, size=5, color="lightblue") +
+    coord_flip() + labs(x = "", y = ""),
+  
+  ncol = 1
+)
+```
+
+
+### employment type
+```{r}
+ggplot(jobs_train,aes(employment_type)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(50))
+```
+
+we do not have enough data for categories 1,2,3. so we will continue the analysis only for Full Time jobs:
+```{r}
+jobs_train <- jobs_train[jobs_train$employment_type=="0: FT",]
+jobs_test <- jobs_test[jobs_test$employment_type=="0: FT",]
+jobs_train <- select(jobs_train,-employment_type)
+jobs_test <- select(jobs_test,-employment_type)
+```
+
+
+
+the jobs
+```{r}
+ggplot(jobs_train,aes(job_title)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(20)) +
+  coord_flip()
+```
+
+we have 5 different jobs, most of them are data engineers.
+
+work year:
+```{r}
+ggplot(jobs_train, aes(work_year)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(25))
+```
+
+most of the data is from the past year. we will see if the salary is changing by the years
+
+```{r}
+ggplot(jobs,aes(job_title,salary,color=work_year)) + geom_boxplot() +
+  #coord_flip() +
+  geom_hline(aes(yintercept=mean(salary)), color="gray", linetype="dashed", size=1) +
+  scale_x_discrete(guide = guide_axis(angle = 15)) +
+  labs(subtitle = "grey dashed line = average salary in $", y = "salary")
+```
+
+
+experience level
+```{r}
+ggplot(jobs_train,aes(experience_level)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(25))
+```
+
+```{r}
+ggplot(jobs,aes(job_title,salary,color=experience_level)) + geom_boxplot() +
+  #coord_flip() +
+  geom_hline(aes(yintercept=mean(salary)), color="gray", linetype="dashed", size=1) +
+  scale_x_discrete(guide = guide_axis(angle = 15)) +
+  labs(subtitle = "grey dashed line = average salary in $", y = "salary")
+```
+
+
+```{r}
+ggplot(jobs_train,aes(same_location)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(60))
+```
+
+most people works from to the same location/country.
+
+```{r}
+ggplot(jobs,aes(job_title,salary,color=same_location)) + geom_boxplot() +
+  #coord_flip() +
+  geom_hline(aes(yintercept=mean(salary)), color="gray", linetype="dashed", size=1) +
+  scale_x_discrete(guide = guide_axis(angle = 15)) +
+  labs(subtitle = "grey dashed line = average salary in $", y = "salary")
+```
+
+```{r}
+ggplot(jobs_train,aes(remote_ratio)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(20))
+```
+
+most employees works either from home or in an office.
+```{r}
+ggplot(jobs,aes(job_title,salary,color=remote_ratio)) + geom_boxplot() +
+  #coord_flip() +
+  geom_hline(aes(yintercept=mean(salary)), color="gray", linetype="dashed", size=1) +
+  scale_x_discrete(guide = guide_axis(angle = 15)) +
+  labs(subtitle = "grey dashed line = average salary in $", y = "salary")
+```
+
+company location
+```{r}
+ggplot(jobs_train,aes(continent)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(25))
+```
+most of them are from America. Categories 3 and 4 have little data, so we will combine them with category 2:
+```{r}
+jobs_train$continent <- ifelse(jobs_train$continent %in% c("2: Asia","3: Oceania","4: Africa"), "3: Else", ifelse(jobs_train$continent=="0: Europe","0: Europe","1: Americas"))
+jobs_test$continent <- ifelse(jobs_test$continent %in% c("2: Asia","3: Oceania","4: Africa"), "3: Else", ifelse(jobs_test$continent=="0: Europe","0: Europe","1: Americas"))
+```
+
+```{r}
+ggplot(jobs_train,aes(continent)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(25))
+```
+
+```{r}
+ggplot(jobs,aes(job_title,salary,color=continent)) + geom_boxplot() +
+  #coord_flip() +
+  geom_hline(aes(yintercept=mean(salary)), color="gray", linetype="dashed", size=1) +
+  scale_x_discrete(guide = guide_axis(angle = 15)) +
+  labs(subtitle = "grey dashed line = average salary in $", y = "salary")
+```
+
+
+
+```{r}
+ggplot(jobs_train,aes(company_size)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(30))
+```
+
+```{r}
+ggplot(jobs_train,aes(job_title)) + 
+  scale_x_discrete(guide = guide_axis(angle = 15)) +
+  geom_bar(aes(fill = company_size), position="fill") +
+  ylab('percent') + scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Greens")
+```
+
+```{r}
+ggplot(jobs,aes(job_title,salary,color=company_size)) + geom_boxplot() +
+  #coord_flip() +
+  geom_hline(aes(yintercept=mean(salary)), color="gray", linetype="dashed", size=1) +
+  scale_x_discrete(guide = guide_axis(angle = 15)) +
+  labs(subtitle = "grey dashed line = average salary in $", y = "salary")
+```
+
+```{r}
+ggplot(jobs_train,aes(company_in_usa)) + geom_bar(fill='#E69E80') +
+  geom_text(stat='count', aes(label=..count..), position =  position_fill(30))
+```
+
+```{r}
+ggplot(jobs,aes(job_title,salary,color=company_in_usa)) + geom_boxplot() +
+  #coord_flip() +
+  geom_hline(aes(yintercept=mean(salary)), color="gray", linetype="dashed", size=1) +
+  scale_x_discrete(guide = guide_axis(angle = 15)) +
+  labs(subtitle = "grey dashed line = average salary in $", y = "salary")
+```
+
+
+
+
+
+
+# Data Modeling
+
+### Linear Regression
+```{r}
+lr_model <- MASS::stepAIC(lm(sqrt(salary) ~  job_title*(experience_level  + company_size + same_location + work_year + remote_ratio + continent),
+                             data  = (jobs_train[jobs_train$salary<20000,][jobs_train$salary>1000,])),
+                          direction = "both")
+summary(lr_model)
+```
+to see how we get to this model please go to linear regression folder.
+
+
+### RF hyperparameters
+```{r}
+# Define the grid of hyperparameters to search over
+grid <- expand.grid(
+                    #ntree = c(100,300,500,700),
+                    mtry = c(5, 8, 10,12, 15),
+                    splitrule = c("variance","extratrees"),
+                    min.node.size = c(1, 5, 10, 15, 20, 25))
+
+# Train a random forest model using grid search
+model <- train(salary ~ job_title*(experience_level  + company_size + same_location + work_year + remote_ratio + continent),
+               data = na.omit(jobs_train[jobs_train$salary<20000,][jobs_train$salary>1000,]),
+               method = "ranger", trControl = trainControl(method = "cv", number = 5),
+               tuneGrid = grid)
+
+# Use the best hyperparameters to train the final model
+best_model <- train(salary ~ job_title*(experience_level  + company_size + same_location + work_year + remote_ratio + continent),
+                     data = na.omit(jobs_train[jobs_train$salary<25000,][jobs_train$salary>1000,]), method = "ranger",
+                    trControl = trainControl(method = "none"), tuneLength = 1, tuneGrid = model$bestTune)
+
+```
+
+```{r}
+plot.train(model)
+```
+
+
+
+# check on test data
+
+```{r}
+rf_pred <- predict(best_model, jobs_test)
+# Calculate the RMSE
+(rmse <- RMSE(rf_pred, jobs_test$salary))
+
+#jobs_test$salary <- sqrt(jobs_test$salary)
+lr_pred <- predict(lr_model, newdata = jobs_test)
+# Calculate the RMSE
+(rmse <- RMSE(lr_pred^2, jobs_test$salary))
+
+```
+first 5 predictions:
+```{r}
+df <- data.frame(
+test = jobs_test$salary[1:10],
+random_forest = rf_pred[1:10],
+linear_regression = lr_pred[1:10]^2)
+df
+```
+
+
+Random Forest model is much better.
+
+
+
+
+

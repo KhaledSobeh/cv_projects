@@ -1,0 +1,255 @@
+---
+title: "project linear regression model"
+output:
+  word_document: default
+  html_document: default
+date: "2023-02-07"
+---
+
+## Linear Regression
+```{r,warning=F,message=FALSE}
+library(lmtest)
+library(Amelia) #missmap
+library(tidyverse)
+library(caTools) #sample.split
+library(cowplot) #plot_grid
+library(caret)
+library(Metrics)
+```
+
+
+# Data Cleaning
+```{r}
+##reading data
+jobs <- read.csv('salaries.csv')
+
+##same jobs different names
+jobs$job_title <- ifelse(jobs$job_title=="ML Engineer","Machine Learning Engineer",jobs$job_title)
+
+##only 5 jobs
+jobs <- jobs %>% filter(job_title %in% c("Data Engineer","Data Scientist","Data Analyst",
+                                         "Machine Learning Engineer","Analytics Engineer"))
+
+####################
+change_factors <- function(col,from,to){ #this function change categories names
+  # enter the column
+  # enter the categories
+  # enter the new categories
+  new_col <- c()
+  for(i in 1:length(col)){
+    for(cat in 1:length(from)){
+      if(from[cat] == col[i]){
+        new_col <- append(new_col,to[cat])
+        break
+      }
+    }
+  }
+  return(new_col)
+}
+
+##change to factors
+jobs$work_year <- as.factor(change_factors(jobs$work_year,
+                                           c("2020","2021","2022","2023"),
+                                           c("0: 2020","1: 2021","2: 2022","3: 2023")))
+jobs$experience_level <- as.factor(change_factors(jobs$experience_level,
+                                                  c("EN","MI","SE","EX"),
+                                                  c("0: EN","1: MI","2: SE","3: EX")))
+jobs$employment_type <- as.factor(change_factors(jobs$employment_type,
+                                                 c("FT","PT","FL","CT"),
+                                                 c("0: FT","1: PT","2: FL","3: CT")))
+jobs$remote_ratio <- as.factor(change_factors(jobs$remote_ratio,
+                                              c("0","50","100"),
+                                              c("0: 0%","1: 50%","2: 100%")))
+jobs$company_size <- as.factor(change_factors(jobs$company_size,
+                                              c("M","S","L"),c("1: M","0: S","2: L"))) 
+jobs$company_in_usa <- as.factor(ifelse(jobs$company_location=="US","1: USA","0: ELSE"))
+
+jobs$job_title <- as.factor(change_factors(jobs$job_title,
+                                           c("Data Engineer","Data Scientist","Data Analyst",
+                                         "Machine Learning Engineer","Analytics Engineer"),
+                                         c("2: Data Engineer","1: Data Scientist","0: Data Analyst",
+                                         "3: Machine Learning Engineer","4: Analytics Engineer")))
+
+##add column
+jobs$same_location <- as.factor(ifelse(
+  jobs$company_location == jobs$employee_residence,"0: Yes","1: No"))
+
+##add continent
+dd <- giscoR::gisco_countrycode
+jobs$continent <-  (sqldf::sqldf(
+            'select j.company_location, dd.continent
+             from jobs as j left join dd
+             on j.company_location = dd.iso2c')[,2])
+jobs$continent <- as.factor(change_factors(jobs$continent, 
+                                           c("Europe","Americas","Asia","Oceania","Africa"),
+                                           c("0: Europe","1: Americas","2: Asia","3: Oceania",
+                                             "4: Africa")))
+ss <- c()
+for(i in 1:nrow(jobs)){
+  if(jobs$continent[i]=="1: Americas"){
+    if(jobs$company_location[i] %in% c("US","CA")){
+      ss <- c(ss,T)
+    }
+    else{
+      ss <- c(ss,F)
+    }
+  }
+  else{
+    ss <- c(ss,T)
+  }
+}
+jobs <- jobs[ss,]
+
+jobs$salary_in_usd_k <- jobs$salary_in_usd/12
+jobs <- select(jobs,-c(salary,salary_in_usd,
+                       salary_currency,employee_residence,
+                       company_location))
+
+##target: change name 
+jobs <- rename(jobs, salary = salary_in_usd_k)
+
+```
+
+
+## train test split
+before we go further, we will split the data. 
+```{r}
+set.seed(99)
+split <- sample.split(jobs$salary,SplitRatio = 0.7)
+jobs_train <- subset(jobs,split == T)
+jobs_test <- subset(jobs,split == F)
+jobs_train <- jobs_train[jobs_train$employment_type=="0: FT",]
+jobs_test <- jobs_test[jobs_test$employment_type=="0: FT",]
+jobs_train <- select(jobs_train,-employment_type)
+jobs_test <- select(jobs_test,-employment_type)
+jobs_train$continent <- ifelse(jobs_train$continent %in% c("2: Asia","3: Oceania","4: Africa"), "3: Else", ifelse(jobs_train$continent=="0: Europe","0: Europe","1: Americas"))
+jobs_test$continent <- ifelse(jobs_test$continent %in% c("2: Asia","3: Oceania","4: Africa"), "3: Else", ifelse(jobs_test$continent=="0: Europe","0: Europe","1: Americas"))
+```
+```{r}
+lr_model <- MASS::stepAIC(lm((salary) ~  job_title*(experience_level  + company_size + same_location + work_year + remote_ratio + continent) ,
+                             data  = jobs_train), direction = "both")
+summary(lr_model)
+```
+
+
+###check assumptions
+
+1. normality assumptions:
+```{r}
+# Extract the residuals
+residuals <- residuals(lr_model)
+
+# Plot the Q-Q plot of the residuals
+qqnorm(residuals)
+qqline(residuals)
+shapiro.test(residuals)
+```
+
+we will try to make it better:
+first we will remove outliers: 20k$+ per month:
+```{r}
+#df <- jobs_train[jobs_train$salary<20000,]
+#df <- as.data.frame(df[df$salary>1000 ,])
+lr_model <- MASS::stepAIC(lm((salary) ~  job_title*(experience_level  + company_size + same_location + work_year + remote_ratio + continent) ,
+                             data  = jobs_train[jobs_train$salary<20000,][jobs_train$salary>1000,]), direction = "both")
+summary(lr_model)
+```
+```{r}
+# Extract the residuals
+residuals <- residuals(lr_model)
+
+# Plot the Q-Q plot of the residuals
+qqnorm(residuals)
+qqline(residuals)
+shapiro.test(residuals)
+```
+better but needs more work:
+
+
+```{r}
+b <- MASS::boxcox(lr_model)
+(lambda <- b$x[which.max(b$y)])
+```
+```{r}
+hist(lr_model$residuals)
+```
+
+
+We need to use sqrt as a transformation:
+
+```{r}
+lr_model <- MASS::stepAIC(lm(sqrt(salary) ~  job_title*(experience_level  + company_size + same_location + work_year + remote_ratio + continent),
+                             data  = (jobs_train[jobs_train$salary<20000,][jobs_train$salary>1000,])),
+                          direction = "both")
+summary(lr_model)
+```
+```{r}
+b <- MASS::boxcox(lr_model)
+(lambda <- b$x[which.max(b$y)])
+```
+
+now one is in the CI, no need for transformation: sqrt is good
+
+```{r}
+# Extract the residuals
+residuals <- residuals(lr_model)
+
+# Plot the Q-Q plot of the residuals
+qqnorm(residuals)
+qqline(residuals)
+shapiro.test(residuals)
+```
+
+```{r}
+# Plot a histogram of the residuals
+hist(residuals)
+```
+
+looking good despite that SW test is rejected
+
+2.
+Constant variance(homoscedasticity)/equal variance:
+```{r}
+# Plot the residuals against the fitted values
+plot(fitted(lr_model), residuals)
+abline(h = 0)
+```
+
+in general, the residuals have a consistent spread regardless of the fitted values, then the assumption of constant variance is met. 
+```{r}
+bptest(lr_model)
+```
+Breusch-Pagan Test: This test uses the residuals from a linear regression model to test for heteroscedasticity. If the p-value is less than a specified significance level (e.g. 0.05), then the assumption of homoscedasticity is rejected and the data exhibit heteroscedasticity.
+
+
+```{r}
+library(sandwich)
+curr_model <- lmtest::coeftest(lr_model, vcov = vcovHC(lr_model, "HC1")) 
+```
+
+```{r}
+#bptest(curr_model)
+```
+
+
+3. 
+Independence of errors:
+```{r}
+plot(1:length(residuals), residuals)
+abline(h = 0)
+```
+
+the residuals are randomly dispersed, then we can say that the assumption of independence is met.
+The Durbin-Watson test is a statistical test that compares the autocorrelation of the residuals to the expected autocorrelation under the assumption of IID errors.
+```{r}
+(dw <- sum(diff(residuals)^2)/sum(residuals^2))
+```
+The Durbin-Watson statistic ranges from 0 to 4, with a value of 2 indicating IID errors. Values close to 2 indicate a weak dependence between the residuals, while values close to 0 or 4 indicate a strong positive or negative dependence, respectively.
+
+Note: the Durbin-Watson test assumes that the errors are normally distributed and have constant variance.
+
+
+
+
+
+ 
